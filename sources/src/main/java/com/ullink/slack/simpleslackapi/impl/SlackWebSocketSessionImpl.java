@@ -81,6 +81,8 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
 
     private static final String CHAT_POST_MESSAGE_COMMAND = "chat.postMessage";
 
+    private static final String CHAT_POST_EPHEMERAL_COMMAND = "chat.postEphemeral";
+
     private static final String FILE_UPLOAD_COMMAND       = "files.upload";
 
     private static final String CHAT_DELETE_COMMAND       = "chat.delete";
@@ -297,6 +299,20 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
         disconnectImpl();
         stopConnectionMonitoring();
     }
+
+    public void reconnect() throws IOException{
+        while(true) {
+            if (!this.isConnected()) {
+                connectImpl();
+                break;
+            } else {
+                disconnectImpl();
+            }
+
+        }
+    }
+
+
     @Override
     public boolean isConnected()
     {
@@ -354,7 +370,6 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
                 @Override
                 public void onError(Session session, Throwable thr) {
                     LOGGER.error("Endpoint#onError called", thr);
-                    websocketSession = null;
                 }
 
             }, URI.create(webSocketConnectionURL));
@@ -432,7 +447,7 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
                             }
                             websocketSession = null;
                             if (reconnectOnDisconnection) {
-                                establishWebsocketConnection();
+                                reconnect();
                             }
                             else {
                                 this.interrupt();
@@ -446,14 +461,14 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
                                     websocketSession.getBasicRemote().sendText("{\"type\":\"ping\",\"id\":" + lastPingSent + "}");
                                 }
                                 else if (reconnectOnDisconnection) {
-                                    establishWebsocketConnection();
+                                    reconnect();
                                 }
                             }
                             catch (IllegalStateException e) {
                                 LOGGER.warn("exception caught while using websocket ", e);
                                 // websocketSession might be closed in this case
                                 if (reconnectOnDisconnection) {
-                                    establishWebsocketConnection();
+                                    reconnect();
                                 }
                             }
                         }
@@ -536,6 +551,57 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
         }
 
         postSlackCommand(arguments, CHAT_POST_MESSAGE_COMMAND, handle);
+        return handle;
+    }
+
+    @Override
+    public SlackMessageHandle<SlackMessageReply> sendEphemeralMessage(SlackChannel channel, SlackUser user, SlackPreparedMessage preparedMessage, SlackChatConfiguration chatConfiguration)
+    {
+        SlackMessageHandle<SlackMessageReply> handle = new SlackMessageHandle<>(getNextMessageId());
+        Map<String, String> arguments = new HashMap<>();
+        arguments.put("token", authToken);
+        arguments.put("channel", channel.getId());
+        arguments.put("text", preparedMessage.getMessage());
+        arguments.put("user", user.getId());
+        if (chatConfiguration.isAsUser())
+        {
+            arguments.put("as_user", "true");
+        }
+        if (chatConfiguration.getAvatar() == Avatar.ICON_URL)
+        {
+            arguments.put("icon_url", chatConfiguration.getAvatarDescription());
+        }
+        if (chatConfiguration.getAvatar() == Avatar.EMOJI)
+        {
+            arguments.put("icon_emoji", chatConfiguration.getAvatarDescription());
+        }
+        if (chatConfiguration.getUserName() != null)
+        {
+            arguments.put("username", chatConfiguration.getUserName());
+        }
+        if (preparedMessage.getAttachments() != null && preparedMessage.getAttachments().length > 0)
+        {
+            arguments.put("attachments", SlackJSONAttachmentFormatter
+                    .encodeAttachments(preparedMessage.getAttachments()).toString());
+        }
+        if (!preparedMessage.isUnfurl())
+        {
+            arguments.put("unfurl_links", "false");
+            arguments.put("unfurl_media", "false");
+        }
+        if (preparedMessage.isLinkNames())
+        {
+            arguments.put("link_names", "1");
+        }
+        if(preparedMessage.getThreadTimestamp() != null) {
+            arguments.put("thread_ts", preparedMessage.getThreadTimestamp());
+
+            if(preparedMessage.isReplyBroadcast()) {
+                arguments.put("reply_broadcast", "true");
+            }
+        }
+
+        postSlackCommand(arguments, CHAT_POST_EPHEMERAL_COMMAND, handle);
         return handle;
     }
 
@@ -949,8 +1015,8 @@ class SlackWebSocketSessionImpl extends AbstractSlackSessionImpl implements Slac
             LOGGER.debug("pong received " + lastPingAck);
         }
         else if ("reconnect_url".equals(object.get("type").getAsString())) {
-            webSocketConnectionURL = object.get("url").getAsString();
-            LOGGER.debug("new websocket connection received " + webSocketConnectionURL);
+            String newWebSocketConnectionURL = object.get("url").getAsString();
+            LOGGER.debug("new websocket connection received " + newWebSocketConnectionURL);
         }
         else
         {
